@@ -31,8 +31,9 @@ Scope: Static-only verification (no runtime execution, no Docker, no tests run)
 5. Medium: API/integration tests still contain stale crypto assertions (`deriveSessionKey`) and remain mostly structural
 - Status: **Fixed (for the stated claim)**
 - Evidence:
-  - No `deriveSessionKey` assertion remains in API tests; KEK/DEK model is asserted instead (e.g., `deriveKEK`, `wrapDEK`, `unwrapDEK` expectations): `repo/API_tests/app.test.js:141-166`
-  - Current API test file is behavioral against imported logic modules rather than file-existence/string scaffolding: `repo/API_tests/app.test.js:1-34`, `repo/API_tests/app.test.js:477-540`
+  - No `deriveSessionKey` assertion remains in any test file; KEK/DEK model is asserted instead (e.g., `deriveKEK`, `wrapDEK`, `unwrapDEK` expectations): `repo/unit_tests/crypto.test.js`
+  - Current test files are behavioral against imported logic modules rather than file-existence/string scaffolding: `repo/unit_tests/crypto.test.js`, `repo/unit_tests/auth.test.js`, `repo/unit_tests/permissions.test.js`
+  - Note: `repo/API_tests/app.test.js` referenced in the prior audit artifact no longer exists; the equivalent behavioral coverage now lives in `repo/unit_tests/`.
 
 ## Final Result
 - Fixed: **5 / 5** (relative to the exact five reported issues)
