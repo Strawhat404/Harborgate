@@ -1,75 +1,145 @@
+/**
+ * Tests for the REAL production Router (frontend/js/router.js).
+ *
+ * The Router is a singleton that depends on window.location.hash and
+ * window.addEventListener. We set up minimal window globals before
+ * importing the module so it can run in Node.js unchanged.
+ */
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Router uses window.location.hash and window.addEventListener which aren't available in Node.
-// We test the pure routing logic by creating a testable router that mirrors the production one.
-// The production router.js is tested via integration in the browser.
-// Here we verify the routing algorithm is correct.
+// --- Set up window globals BEFORE importing the Router ---
+let hashChangeHandler = null;
 
-function createRouter() {
-  let routes = {};
-  let currentHash = '/';
+globalThis.window = globalThis.window || {};
+globalThis.window.location = globalThis.window.location || { hash: '/' };
+globalThis.window.addEventListener = (event, handler) => {
+  if (event === 'hashchange') hashChangeHandler = handler;
+};
 
-  return {
-    register(hash, handler) { routes[hash] = handler; },
-    navigate(hash) { currentHash = hash; this._resolve(); },
-    currentRoute() { return currentHash; },
-    _resolve() {
-      const handler = routes[currentHash] || routes['/'];
-      if (handler) handler(currentHash);
-    },
-    reset() { routes = {}; currentHash = '/'; }
-  };
-}
+// Import the REAL production Router
+const Router = (await import('../frontend/js/router.js')).default;
 
-describe('Router', () => {
-  let router;
-
+describe('Router (production module)', () => {
   beforeEach(() => {
-    router = createRouter();
+    // Reset singleton state between tests
+    Router._routes = {};
+    Router._currentView = null;
+    globalThis.window.location.hash = '/';
+    hashChangeHandler = null;
   });
 
-  it('should register and resolve routes', () => {
+  it('register() stores route handlers in _routes', () => {
+    const handler = () => {};
+    Router.register('/test', handler);
+    assert.strictEqual(Router._routes['/test'], handler);
+  });
+
+  it('navigate() sets window.location.hash', () => {
+    Router.navigate('#/dashboard');
+    assert.strictEqual(globalThis.window.location.hash, '#/dashboard');
+  });
+
+  it('currentRoute() reads from window.location.hash and strips the leading #', () => {
+    globalThis.window.location.hash = '#/settings';
+    assert.strictEqual(Router.currentRoute(), '/settings');
+  });
+
+  it('currentRoute() returns "/" when hash is empty', () => {
+    globalThis.window.location.hash = '';
+    assert.strictEqual(Router.currentRoute(), '/');
+  });
+
+  it('_resolve() calls the correct handler based on hash', () => {
     let called = null;
-    router.register('/test', (route) => { called = route; });
-    router.navigate('/test');
-    assert.equal(called, '/test');
+    Router.register('/page', (path) => { called = path; });
+    globalThis.window.location.hash = '#/page';
+    Router._resolve();
+    assert.strictEqual(called, '/page');
   });
 
-  it('should fall back to / for unknown routes', () => {
+  it('_resolve() falls back to "/" handler for unknown routes', () => {
     let called = null;
-    router.register('/', (route) => { called = route; });
-    router.navigate('/nonexistent');
-    assert.equal(called, '/nonexistent');
+    Router.register('/', (path) => { called = path; });
+    globalThis.window.location.hash = '#/nonexistent';
+    Router._resolve();
+    assert.strictEqual(called, '/nonexistent');
   });
 
-  it('should track current route', () => {
-    router.register('/page', () => {});
-    router.navigate('/page');
-    assert.equal(router.currentRoute(), '/page');
+  it('start() calls window.addEventListener with "hashchange"', () => {
+    Router.start();
+    assert.ok(hashChangeHandler !== null, 'hashchange listener should be registered');
+    assert.strictEqual(typeof hashChangeHandler, 'function');
   });
 
-  it('should register multiple routes', () => {
+  it('start() immediately resolves the current route', () => {
+    let called = null;
+    Router.register('/', (path) => { called = path; });
+    globalThis.window.location.hash = '#/';
+    Router.start();
+    assert.strictEqual(called, '/');
+  });
+
+  it('hashchange listener triggers _resolve()', () => {
+    let called = null;
+    Router.register('/dynamic', (path) => { called = path; });
+    Router.start();
+    // Simulate a hashchange event
+    globalThis.window.location.hash = '#/dynamic';
+    hashChangeHandler();
+    assert.strictEqual(called, '/dynamic');
+  });
+
+  it('multiple routes can be registered and each resolves correctly', () => {
     const visited = [];
-    router.register('/a', () => visited.push('a'));
-    router.register('/b', () => visited.push('b'));
-    router.navigate('/a');
-    router.navigate('/b');
-    assert.deepEqual(visited, ['a', 'b']);
+    Router.register('/a', () => visited.push('a'));
+    Router.register('/b', () => visited.push('b'));
+    Router.register('/c', () => visited.push('c'));
+
+    globalThis.window.location.hash = '#/a';
+    Router._resolve();
+    globalThis.window.location.hash = '#/b';
+    Router._resolve();
+    globalThis.window.location.hash = '#/c';
+    Router._resolve();
+
+    assert.deepStrictEqual(visited, ['a', 'b', 'c']);
   });
 
-  it('should handle root route', () => {
-    let called = false;
-    router.register('/', () => { called = true; });
-    router.navigate('/');
-    assert.equal(called, true);
-  });
-
-  it('should overwrite route handler on re-register', () => {
+  it('re-registering a route overwrites the previous handler', () => {
     let value = '';
-    router.register('/x', () => { value = 'first'; });
-    router.register('/x', () => { value = 'second'; });
-    router.navigate('/x');
-    assert.equal(value, 'second');
+    Router.register('/x', () => { value = 'first'; });
+    Router.register('/x', () => { value = 'second'; });
+
+    globalThis.window.location.hash = '#/x';
+    Router._resolve();
+    assert.strictEqual(value, 'second');
+  });
+
+  it('_currentView tracks the resolved path', () => {
+    Router.register('/tracked', () => {});
+    globalThis.window.location.hash = '#/tracked';
+    Router._resolve();
+    assert.strictEqual(Router._currentView, '/tracked');
+  });
+
+  it('_currentView updates on each resolution', () => {
+    Router.register('/first', () => {});
+    Router.register('/second', () => {});
+
+    globalThis.window.location.hash = '#/first';
+    Router._resolve();
+    assert.strictEqual(Router._currentView, '/first');
+
+    globalThis.window.location.hash = '#/second';
+    Router._resolve();
+    assert.strictEqual(Router._currentView, '/second');
+  });
+
+  it('_resolve() does not update _currentView when no handler matches', () => {
+    // No routes registered, no fallback
+    globalThis.window.location.hash = '#/orphan';
+    Router._resolve();
+    assert.strictEqual(Router._currentView, null);
   });
 });

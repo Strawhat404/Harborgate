@@ -12,3 +12,36 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  test-runner:
+    image: node:20-alpine
+    volumes:
+      - .:/app:ro
+    working_dir: /app
+    command: sh -c "node --test unit_tests/*.test.js integration_tests/*.test.js"
+    profiles:
+      - test
+
+  coverage-runner:
+    image: node:20-alpine
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: sh -c "npm install --no-save c8 && npx c8 node --test unit_tests/*.test.js integration_tests/*.test.js"
+    profiles:
+      - coverage
+
+  e2e-runner:
+    image: mcr.microsoft.com/playwright:v1.42.0-jammy
+    volumes:
+      - ./e2e_tests:/app/e2e_tests
+      - ./frontend:/app/frontend:ro
+    working_dir: /app/e2e_tests
+    environment:
+      - PLAYWRIGHT_BASE_URL=http://web:80
+    depends_on:
+      web:
+        condition: service_healthy
+    command: sh -c "npm ci && npx playwright test --config=playwright.config.js"
+    profiles:
+      - e2e

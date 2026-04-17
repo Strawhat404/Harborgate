@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { setupDOM, teardownDOM } from './dom-mock.js';
-import { createNotificationBadge } from '../frontend/js/components/notifications.js';
+import { createNotificationBadge, showNotification } from '../frontend/js/components/notifications.js';
 
 describe('createNotificationBadge', () => {
   it('should return a badge span for positive count', () => {
@@ -31,9 +31,6 @@ describe('createNotificationBadge', () => {
 });
 
 describe('showNotification', () => {
-  // showNotification caches the toastContainer at module level, so we test
-  // using a fresh dynamic import is not practical. Instead, we test the
-  // component behavior in a single continuous test suite where the DOM persists.
   let doc;
 
   beforeEach(() => {
@@ -44,56 +41,50 @@ describe('showNotification', () => {
     teardownDOM();
   });
 
-  it('should create a toast container and add toast elements', async () => {
-    // Dynamic import to get a fresh module instance
-    const timestamp = Date.now();
-    // We test the notification logic by reimplementing the core behavior
-    // since the module-level cache makes isolated DOM testing impractical.
-    let toastContainer = null;
-
-    function showNotification(message, type = 'info') {
-      if (!toastContainer) {
-        toastContainer = doc.createElement('div');
-        toastContainer.className = 'toast-container';
-        doc.body.appendChild(toastContainer);
-      }
-      const toast = doc.createElement('div');
-      toast.className = `toast toast-${type}`;
-      toast.textContent = message;
-      toastContainer.appendChild(toast);
-    }
-
-    // Test: creates container on first call
+  // The module-level toastContainer caches across calls. We use a single test
+  // block to exercise the real showNotification sequentially, since the module
+  // state cannot be reset between individual tests without re-importing.
+  it('creates toast container on first call, adds toasts with correct types, and reuses container', () => {
+    // First call: creates the toast-container and appends it to body
     showNotification('Hello');
     assert.equal(doc.body.children.length, 1);
     assert.equal(doc.body.children[0].className, 'toast-container');
 
-    // Test: adds toast with message
-    assert.equal(toastContainer.children.length, 1);
-    assert.equal(toastContainer.children[0].textContent, 'Hello');
+    const container = doc.body.children[0];
 
-    // Test: default type is info
-    assert.equal(toastContainer.children[0].className, 'toast toast-info');
+    // Adds toast with correct message text
+    assert.equal(container.children.length, 1);
+    assert.equal(container.children[0].textContent, 'Hello');
 
-    // Test: custom type
+    // Default type is info
+    assert.equal(container.children[0].className, 'toast toast-info');
+
+    // Custom type: error
     showNotification('Error!', 'error');
-    assert.equal(toastContainer.children[1].className, 'toast toast-error');
+    assert.equal(container.children.length, 2);
+    assert.equal(container.children[1].className, 'toast toast-error');
+    assert.equal(container.children[1].textContent, 'Error!');
 
-    // Test: success type
+    // Custom type: success
     showNotification('Done', 'success');
-    assert.equal(toastContainer.children[2].className, 'toast toast-success');
+    assert.equal(container.children.length, 3);
+    assert.equal(container.children[2].className, 'toast toast-success');
+    assert.equal(container.children[2].textContent, 'Done');
 
-    // Test: warning type
+    // Custom type: warning
     showNotification('Watch out', 'warning');
-    assert.equal(toastContainer.children[3].className, 'toast toast-warning');
+    assert.equal(container.children.length, 4);
+    assert.equal(container.children[3].className, 'toast toast-warning');
+    assert.equal(container.children[3].textContent, 'Watch out');
 
-    // Test: multiple toasts in same container
-    assert.equal(toastContainer.children.length, 4);
-    assert.equal(doc.body.children.length, 1); // still one container
-
-    // Test: reuses same container
-    showNotification('Another');
+    // Multiple calls reuse the same container (still one container in body)
     assert.equal(doc.body.children.length, 1);
-    assert.equal(toastContainer.children.length, 5);
+
+    // Each call adds a new toast child
+    showNotification('Another');
+    assert.equal(container.children.length, 5);
+    assert.equal(doc.body.children.length, 1);
+    assert.equal(container.children[4].textContent, 'Another');
+    assert.equal(container.children[4].className, 'toast toast-info');
   });
 });

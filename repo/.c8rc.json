@@ -1,0 +1,13 @@
+{
+  "all": true,
+  "src": ["frontend/js"],
+  "include": ["frontend/js/**/*.js"],
+  "exclude": ["unit_tests/**", "integration_tests/**", "e2e_tests/**", "node_modules/**"],
+  "reporter": ["text", "text-summary", "lcov", "html"],
+  "report-dir": "coverage",
+  "check-coverage": false,
+  "lines": 0,
+  "branches": 0,
+  "functions": 0,
+  "statements": 0
+}

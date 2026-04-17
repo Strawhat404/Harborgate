@@ -1,127 +1,234 @@
-import { describe, it, beforeEach } from 'node:test';
-import assert from 'node:assert/strict';
-
 /**
- * Route-level authorization tests.
+ * Route-level authorization tests — exercises the REAL production
+ * requireAuth() and requireRole() functions from auth-service.js.
  *
- * The production views call requireAuth() or requireRole([...]) at the top of
- * their render functions. Both helpers verify the session against the DB and
- * redirect to /login (no session) or / (wrong role) when authorization fails.
- *
- * Since requireAuth/requireRole depend on browser globals (localStorage,
- * window.location, IndexedDB) we test the equivalent pure logic here:
- *   - Session presence and expiry checks
- *   - Role-gating per view
- *   - Fail-closed behaviour (no session, wrong role, missing user)
+ * These are the actual guard functions called at the top of every view.
+ * Tests verify:
+ *   - requireAuth returns false and redirects when no session
+ *   - requireAuth returns false for expired session
+ *   - requireAuth returns false for banned user
+ *   - requireAuth returns true and sets _verifiedUser for valid session
+ *   - requireRole returns false when role is not in allowed list
+ *   - requireRole returns true for correct role
+ *   - requireRole redirects to /login when no session
+ *   - requireRole redirects to / when wrong role
+ *   - Full role × route matrix against production functions
+ *   - Permission checks via hasPermissionForRole (production)
  */
-
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
 import {
+  installFakeIndexedDB,
+  installFakeLocalStorage,
+  resetFakeIndexedDB
+} from './indexeddb-mock.js';
+
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+installFakeIndexedDB();
+installFakeLocalStorage();
+globalThis.window = globalThis.window || {};
+globalThis.window.location = globalThis.window.location || { hash: '/' };
+
+const DB = (await import('../frontend/js/database.js')).default;
+const auth = await import('../frontend/js/services/auth-service.js');
+const {
   isSessionExpired,
   hasPermissionForRole,
-  SESSION_TIMEOUT
-} from '../frontend/js/lib/auth-logic.js';
+  SESSION_TIMEOUT,
+  SESSION_WARNING
+} = await import('../frontend/js/lib/auth-logic.js');
 
-// Map mirrors NAV_ITEMS / route registrations in index.html
-const ROUTE_ROLE_MAP = {
-  '/':              ['visitor', 'operator', 'reviewer', 'admin'],
-  '/reservations':  ['visitor', 'operator', 'admin'],
-  '/unlock':        ['operator', 'admin'],
-  '/map':           ['visitor', 'operator', 'reviewer', 'admin'],
-  '/content':       ['reviewer', 'admin'],
-  '/notifications': ['visitor', 'operator', 'reviewer', 'admin'],
-  '/admin':         ['admin'],
-  '/settings':      ['visitor', 'operator', 'reviewer', 'admin']
-};
+const ADMIN_PW = 'AdminPass-1!Strong';
+const VISITOR_PW = 'VisitorPw-1!Strong';
+const OPERATOR_PW = 'OperatorP-1!Strong';
+const REVIEWER_PW = 'ReviewerP-1!Strong';
 
-// --------------------------------------------------------------------------
-// requireAuth behaviour
-// --------------------------------------------------------------------------
-describe('Route Authorization — requireAuth', () => {
-  it('should reject when no session exists (null)', () => {
-    const session = null;
-    // requireAuth checks getSession() which returns null → redirect to /login
-    assert.equal(session, null);
+beforeEach(async () => {
+  await resetFakeIndexedDB(DB);
+  globalThis.localStorage.clear();
+  globalThis.window.location.hash = '/';
+});
+
+afterEach(() => {
+  auth.logout();
+});
+
+// =========================================================================
+// requireAuth — real production function
+// =========================================================================
+describe('Route Auth — requireAuth (production)', () => {
+  it('returns false and redirects to /login when no session exists', async () => {
+    // No setup, no login — session is empty
+    const result = await auth.requireAuth();
+    assert.equal(result, false);
+    assert.equal(globalThis.window.location.hash, '/login');
   });
 
-  it('should reject an expired session', () => {
-    const session = { lastActivity: Date.now() - SESSION_TIMEOUT - 1000 };
-    assert.equal(isSessionExpired(session), true);
+  it('returns true for a valid logged-in session', async () => {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+    globalThis.window.location.hash = '/';
+
+    const result = await auth.requireAuth();
+    assert.equal(result, true);
+    // _verifiedUser should be set — getCurrentUser should work
+    const user = auth.getCurrentUser();
+    assert.ok(user);
+    assert.equal(user.username, 'admin');
+    assert.equal(user.role, 'admin');
   });
 
-  it('should accept a fresh session', () => {
-    const session = { lastActivity: Date.now() };
-    assert.equal(isSessionExpired(session), false);
+  it('returns false for an expired session', async () => {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+
+    // Manually expire the session in localStorage
+    const raw = globalThis.localStorage.getItem('hg_session');
+    const session = JSON.parse(raw);
+    session.lastActivity = Date.now() - SESSION_TIMEOUT - 5000;
+    globalThis.localStorage.setItem('hg_session', JSON.stringify(session));
+
+    const result = await auth.requireAuth();
+    assert.equal(result, false);
+    assert.equal(globalThis.window.location.hash, '/login');
   });
 
-  it('should reject when session user is banned', () => {
-    // verifySessionUser checks user.banned — if true, returns null → fail closed
-    const user = { id: 1, username: 'test', role: 'visitor', banned: true };
-    assert.equal(user.banned, true, 'banned user should be rejected by requireAuth');
+  it('returns false and redirects when user is banned', async () => {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+
+    // Ban the user directly in DB
+    const users = await DB.getAll('users');
+    const adminUser = users.find(u => u.username === 'admin');
+    adminUser.banned = true;
+    await DB.put('users', adminUser);
+
+    const result = await auth.requireAuth();
+    assert.equal(result, false);
+    assert.equal(globalThis.window.location.hash, '/login');
   });
 
-  it('should reject when session username does not match DB user', () => {
-    // verifySessionUser cross-checks session.username vs DB user.username
-    const session = { userId: 1, username: 'alice' };
-    const dbUser = { id: 1, username: 'bob' };
-    assert.notEqual(session.username, dbUser.username,
-      'username mismatch should cause requireAuth to fail closed');
+  it('returns false when session userId does not match DB', async () => {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+
+    // Tamper the session to have a non-existent userId
+    const raw = globalThis.localStorage.getItem('hg_session');
+    const session = JSON.parse(raw);
+    session.userId = 99999;
+    globalThis.localStorage.setItem('hg_session', JSON.stringify(session));
+
+    const result = await auth.requireAuth();
+    assert.equal(result, false);
   });
 });
 
-// --------------------------------------------------------------------------
-// requireRole behaviour per view
-// --------------------------------------------------------------------------
-describe('Route Authorization — requireRole per view', () => {
-  const ALL_ROLES = ['visitor', 'operator', 'reviewer', 'admin'];
+// =========================================================================
+// requireRole — real production function
+// =========================================================================
+describe('Route Auth — requireRole (production)', () => {
+  it('returns false and redirects to /login when no session', async () => {
+    const result = await auth.requireRole(['admin']);
+    assert.equal(result, false);
+    assert.equal(globalThis.window.location.hash, '/login');
+  });
+
+  it('returns true when user role matches', async () => {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+    globalThis.window.location.hash = '/';
+
+    const result = await auth.requireRole(['admin']);
+    assert.equal(result, true);
+  });
+
+  it('returns false and redirects to / when role does not match', async () => {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+    await auth.registerWithRole('vis', VISITOR_PW, 'visitor', { id: 1, username: 'admin', role: 'admin' });
+    auth.logout();
+    await auth.login('vis', VISITOR_PW);
+    globalThis.window.location.hash = '/somepage';
+
+    const result = await auth.requireRole(['admin']);
+    assert.equal(result, false);
+    assert.equal(globalThis.window.location.hash, '/');
+  });
+
+  it('accepts string argument (single role)', async () => {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+
+    const result = await auth.requireRole('admin');
+    assert.equal(result, true);
+  });
+
+  it('accepts multiple roles and matches any', async () => {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+    await auth.registerWithRole('op', OPERATOR_PW, 'operator', { id: 1, username: 'admin', role: 'admin' });
+    auth.logout();
+    await auth.login('op', OPERATOR_PW);
+    globalThis.window.location.hash = '/';
+
+    const result = await auth.requireRole(['visitor', 'operator', 'admin']);
+    assert.equal(result, true);
+  });
+});
+
+// =========================================================================
+// Full role × route matrix — tests the REAL requireRole against each view's config
+// =========================================================================
+describe('Route Auth — role × route matrix (production)', () => {
+  const ROUTE_ROLE_MAP = {
+    '/':              ['visitor', 'operator', 'reviewer', 'admin'],
+    '/reservations':  ['visitor', 'operator', 'admin'],
+    '/unlock':        ['operator', 'admin'],
+    '/map':           ['visitor', 'operator', 'reviewer', 'admin'],
+    '/content':       ['reviewer', 'admin'],
+    '/notifications': ['visitor', 'operator', 'reviewer', 'admin'],
+    '/admin':         ['admin'],
+    '/settings':      ['visitor', 'operator', 'reviewer', 'admin']
+  };
+
+  const ROLE_PASSWORDS = {
+    visitor: VISITOR_PW,
+    operator: OPERATOR_PW,
+    reviewer: REVIEWER_PW,
+    admin: ADMIN_PW
+  };
+
+  async function setupAllUsers() {
+    await auth.setupAdmin('admin', ADMIN_PW);
+    await auth.login('admin', ADMIN_PW);
+    await auth.requireRole(['admin']);
+    await auth.registerWithRole('visitor', VISITOR_PW, 'visitor', { id: 1, username: 'admin', role: 'admin' });
+    await auth.registerWithRole('operator', OPERATOR_PW, 'operator', { id: 1, username: 'admin', role: 'admin' });
+    await auth.registerWithRole('reviewer', REVIEWER_PW, 'reviewer', { id: 1, username: 'admin', role: 'admin' });
+    auth.logout();
+  }
 
   for (const [route, allowedRoles] of Object.entries(ROUTE_ROLE_MAP)) {
-    for (const role of ALL_ROLES) {
+    for (const role of ['visitor', 'operator', 'reviewer', 'admin']) {
       const shouldAllow = allowedRoles.includes(role);
-      it(`${route} should ${shouldAllow ? 'allow' : 'deny'} role "${role}"`, () => {
-        assert.equal(allowedRoles.includes(role), shouldAllow);
+
+      it(`${route} ${shouldAllow ? 'ALLOWS' : 'DENIES'} ${role} (real requireRole)`, async () => {
+        await setupAllUsers();
+        await auth.login(role, ROLE_PASSWORDS[role]);
+        globalThis.window.location.hash = route;
+
+        const result = await auth.requireRole(allowedRoles);
+        assert.equal(result, shouldAllow, `${role} at ${route} should be ${shouldAllow ? 'allowed' : 'denied'}`);
       });
     }
   }
-
-  it('should deny visitor access to /admin', () => {
-    assert.equal(ROUTE_ROLE_MAP['/admin'].includes('visitor'), false);
-  });
-
-  it('should deny visitor access to /unlock', () => {
-    assert.equal(ROUTE_ROLE_MAP['/unlock'].includes('visitor'), false);
-  });
-
-  it('should deny visitor access to /content', () => {
-    assert.equal(ROUTE_ROLE_MAP['/content'].includes('visitor'), false);
-  });
-
-  it('should deny reviewer access to /unlock', () => {
-    assert.equal(ROUTE_ROLE_MAP['/unlock'].includes('reviewer'), false);
-  });
-
-  it('should deny reviewer access to /admin', () => {
-    assert.equal(ROUTE_ROLE_MAP['/admin'].includes('reviewer'), false);
-  });
-
-  it('should deny operator access to /content', () => {
-    assert.equal(ROUTE_ROLE_MAP['/content'].includes('operator'), false);
-  });
-
-  it('should deny operator access to /admin', () => {
-    assert.equal(ROUTE_ROLE_MAP['/admin'].includes('operator'), false);
-  });
-
-  it('should allow admin access to all routes', () => {
-    for (const [route, roles] of Object.entries(ROUTE_ROLE_MAP)) {
-      assert.ok(roles.includes('admin'), `admin should have access to ${route}`);
-    }
-  });
 });
 
-// --------------------------------------------------------------------------
-// Permission-level checks that back the role gates
-// --------------------------------------------------------------------------
-describe('Route Authorization — permission checks per role', () => {
+// =========================================================================
+// Permission checks — real hasPermissionForRole from auth-logic.js
+// =========================================================================
+describe('Route Auth — permission checks (production auth-logic)', () => {
   it('visitor cannot access device permissions (backs /unlock gate)', () => {
     assert.equal(hasPermissionForRole('visitor', 'devices.unlock'), false);
     assert.equal(hasPermissionForRole('visitor', 'devices.view'), false);
@@ -146,8 +253,22 @@ describe('Route Authorization — permission checks per role', () => {
     assert.equal(hasPermissionForRole('reviewer', 'content.review'), true);
   });
 
+  it('admin has every permission', () => {
+    assert.equal(hasPermissionForRole('admin', 'devices.unlock'), true);
+    assert.equal(hasPermissionForRole('admin', 'content.review'), true);
+    assert.equal(hasPermissionForRole('admin', 'reservations.manage'), true);
+  });
+
   it('unknown role has no permissions', () => {
     assert.equal(hasPermissionForRole('unknown', 'reservations.view'), false);
     assert.equal(hasPermissionForRole('unknown', 'devices.unlock'), false);
+  });
+
+  it('session timeout constant is 30 minutes', () => {
+    assert.equal(SESSION_TIMEOUT, 30 * 60 * 1000);
+  });
+
+  it('session warning constant is 25 minutes', () => {
+    assert.equal(SESSION_WARNING, 25 * 60 * 1000);
   });
 });

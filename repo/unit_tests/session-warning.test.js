@@ -1,11 +1,16 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
 import { setupDOM, teardownDOM } from './dom-mock.js';
-import Store from '../frontend/js/store.js';
+import { installFakeIndexedDB, installFakeLocalStorage } from './indexeddb-mock.js';
 
-// session-warning.js imports auth-service which may use fetch/other browser APIs.
-// We test the session warning logic by replicating the component's subscriber pattern,
-// which mirrors what initSessionWarning() sets up.
+// session-warning.js imports auth-service which imports database.js (needs IndexedDB)
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+installFakeIndexedDB();
+installFakeLocalStorage();
+
+import Store from '../frontend/js/store.js';
+import { initSessionWarning } from '../frontend/js/components/session-warning.js';
 
 describe('Session Warning Component', () => {
   let doc;
@@ -13,122 +18,104 @@ describe('Session Warning Component', () => {
   beforeEach(() => {
     doc = setupDOM();
     Store.reset();
+    initSessionWarning();
   });
 
   afterEach(() => {
+    // Trigger sessionExpired to reset the module-level warningEl to null
+    // (hideSessionWarning is called by the sessionExpired handler)
+    Store.set('sessionExpired', true);
     Store.reset();
     teardownDOM();
   });
 
-  it('should detect sessionWarning event from Store', () => {
-    let warningTriggered = false;
-    Store.subscribe((key, value) => {
-      if (key === 'sessionWarning' && value === true) {
-        warningTriggered = true;
-      }
-    });
-    Store.set('sessionWarning', true);
-    assert.ok(warningTriggered);
-  });
-
-  it('should detect sessionExpired event from Store', () => {
-    let expiredTriggered = false;
-    Store.subscribe((key, value) => {
-      if (key === 'sessionExpired' && value === true) {
-        expiredTriggered = true;
-      }
-    });
-    Store.set('sessionExpired', true);
-    assert.ok(expiredTriggered);
-  });
-
-  it('should render warning overlay on sessionWarning', () => {
-    let warningEl = null;
-
-    Store.subscribe((key, value) => {
-      if (key === 'sessionWarning' && value === true) {
-        warningEl = doc.createElement('div');
-        warningEl.className = 'session-warning-overlay';
-        warningEl.innerHTML = `
-          <div class="session-warning">
-            <h2>Session Expiring</h2>
-            <p>Your session will expire in 5 minutes due to inactivity.</p>
-            <div class="form-actions">
-              <button class="btn btn-primary" id="extend-session-btn">Extend Session</button>
-              <button class="btn btn-secondary" id="logout-session-btn">Logout</button>
-            </div>
-          </div>
-        `;
-        doc.body.appendChild(warningEl);
-      }
-    });
-
+  it('initSessionWarning subscribes to Store (sessionWarning triggers overlay)', () => {
     Store.set('sessionWarning', true);
     assert.equal(doc.body.children.length, 1);
     assert.equal(doc.body.children[0].className, 'session-warning-overlay');
-    assert.ok(doc.body.children[0].innerHTML.includes('Session Expiring'));
-    assert.ok(doc.body.children[0].innerHTML.includes('Extend Session'));
-    assert.ok(doc.body.children[0].innerHTML.includes('Logout'));
   });
 
-  it('should render expired notice on sessionExpired', () => {
-    Store.subscribe((key, value) => {
-      if (key === 'sessionExpired' && value === true) {
-        const el = doc.createElement('div');
-        el.className = 'session-warning-overlay';
-        el.innerHTML = `
-          <div class="session-warning">
-            <h2>Session Expired</h2>
-            <p>Your session has expired due to inactivity. Please log in again.</p>
-            <div class="form-actions">
-              <button class="btn btn-primary" id="relogin-btn">Log In</button>
-            </div>
-          </div>
-        `;
-        doc.body.appendChild(el);
-      }
-    });
+  it('warning overlay has correct structure', () => {
+    Store.set('sessionWarning', true);
+    const overlay = doc.body.children[0];
+    assert.equal(overlay.className, 'session-warning-overlay');
+    assert.ok(overlay.innerHTML.includes('Session Expiring'));
+    assert.ok(overlay.innerHTML.includes('Your session will expire in 5 minutes'));
+  });
 
+  it('warning overlay has Extend Session and Logout buttons', () => {
+    Store.set('sessionWarning', true);
+    const overlay = doc.body.children[0];
+    assert.ok(overlay.innerHTML.includes('Extend Session'));
+    assert.ok(overlay.innerHTML.includes('extend-session-btn'));
+    assert.ok(overlay.innerHTML.includes('Logout'));
+    assert.ok(overlay.innerHTML.includes('logout-session-btn'));
+  });
+
+  it('duplicate warnings are prevented', () => {
+    Store.set('sessionWarning', true);
+    Store.set('sessionWarning', true);
+    // The duplicate guard in showSessionWarning prevents a second overlay
+    assert.equal(doc.body.children.length, 1);
+  });
+
+  it('setting sessionExpired removes warning and shows expired notice', () => {
+    Store.set('sessionWarning', true);
+    assert.equal(doc.body.children.length, 1);
+    assert.ok(doc.body.children[0].innerHTML.includes('Session Expiring'));
+
+    Store.set('sessionExpired', true);
+    // hideSessionWarning removes the warning overlay, showExpiredNotice adds expired overlay
+    assert.equal(doc.body.children.length, 1);
+    assert.ok(doc.body.children[0].innerHTML.includes('Session Expired'));
+  });
+
+  it('expired notice has Session Expired heading and Log In button', () => {
+    Store.set('sessionExpired', true);
+    const overlay = doc.body.children[0];
+    assert.ok(overlay.innerHTML.includes('Session Expired'));
+    assert.ok(overlay.innerHTML.includes('Please log in again'));
+    assert.ok(overlay.innerHTML.includes('Log In'));
+    assert.ok(overlay.innerHTML.includes('relogin-btn'));
+  });
+
+  it('hideSessionWarning removes overlay from DOM', () => {
+    Store.set('sessionWarning', true);
+    assert.equal(doc.body.children.length, 1);
+
+    // sessionExpired triggers hideSessionWarning then showExpiredNotice.
+    // We verify the warning overlay is gone and replaced by expired notice.
+    Store.set('sessionExpired', true);
+    // The warning overlay was removed; only the expired notice remains
+    assert.equal(doc.body.children.length, 1);
+    assert.ok(doc.body.children[0].innerHTML.includes('Session Expired'));
+    // The Session Expiring overlay is no longer present
+    const allOverlays = doc.body.children.filter(c => c.innerHTML.includes('Session Expiring'));
+    assert.equal(allOverlays.length, 0);
+  });
+
+  it('warning then expiry sequence works correctly', () => {
+    // Show warning
+    Store.set('sessionWarning', true);
+    assert.equal(doc.body.children.length, 1);
+    assert.ok(doc.body.children[0].innerHTML.includes('Session Expiring'));
+
+    // Expire the session — warning removed, expired notice shown
     Store.set('sessionExpired', true);
     assert.equal(doc.body.children.length, 1);
     assert.ok(doc.body.children[0].innerHTML.includes('Session Expired'));
     assert.ok(doc.body.children[0].innerHTML.includes('Log In'));
   });
 
-  it('should not show duplicate warnings', () => {
-    let warningEl = null;
-
-    Store.subscribe((key, value) => {
-      if (key === 'sessionWarning' && value === true) {
-        if (warningEl) return; // Guard against duplicates, same as production code
-        warningEl = doc.createElement('div');
-        warningEl.className = 'session-warning-overlay';
-        warningEl.innerHTML = '<div class="session-warning"><h2>Session Expiring</h2></div>';
-        doc.body.appendChild(warningEl);
-      }
-    });
-
-    Store.set('sessionWarning', true);
+  it('Store.set sessionWarning false after warning does not crash', () => {
     Store.set('sessionWarning', true);
     assert.equal(doc.body.children.length, 1);
-  });
 
-  it('should clear warning state via Store', () => {
-    Store.set('sessionWarning', true);
+    // Setting sessionWarning to false should not throw
     Store.set('sessionWarning', false);
-    assert.equal(Store.get('sessionWarning'), false);
-  });
-
-  it('should handle warning then expiry sequence', () => {
-    const events = [];
-
-    Store.subscribe((key, value) => {
-      if (key === 'sessionWarning' && value === true) events.push('warning');
-      if (key === 'sessionExpired' && value === true) events.push('expired');
-    });
-
-    Store.set('sessionWarning', true);
-    Store.set('sessionExpired', true);
-    assert.deepEqual(events, ['warning', 'expired']);
+    // The overlay is still in the DOM (only hideSessionWarning removes it,
+    // and that is called by the Extend Session button or sessionExpired handler,
+    // not by setting sessionWarning to false directly from outside)
+    assert.ok(true, 'No error thrown');
   });
 });

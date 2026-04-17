@@ -1,4 +1,5 @@
 node_modules/
+coverage/
 session/
 reports/
 delivery_acceptance_report_*.md

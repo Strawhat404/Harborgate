@@ -180,6 +180,7 @@ class MockElement {
 class MockDocument {
   constructor() {
     this.body = new MockElement('body');
+    this._stubCache = {};
   }
 
   createElement(tag) {
@@ -202,9 +203,14 @@ class MockDocument {
     // Fall back to innerHTML search across all children
     for (const child of this.body.children) {
       if (child.innerHTML && child.innerHTML.includes(`id="${id}"`)) {
-        const stub = new MockElement('button');
-        stub.attributes.id = id;
-        return stub;
+        // Cache stubs so the same element is returned for repeated lookups
+        if (!this._stubCache[id]) {
+          const stub = new MockElement('button');
+          stub.attributes.id = id;
+          stub.style = {};
+          this._stubCache[id] = stub;
+        }
+        return this._stubCache[id];
       }
     }
     return null;
