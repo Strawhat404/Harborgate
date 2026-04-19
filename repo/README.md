@@ -9,7 +9,7 @@ A browser-based visitor management and content compliance system with role-based
 ## Quick Start
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 Open **http://localhost:8080** in your browser.
@@ -394,7 +394,7 @@ repo/
 │       ├── services/         # Business logic with DB access
 │       ├── components/       # Reusable UI components
 │       └── views/            # Page renderers (9 views)
-├── unit_tests/               # Node.js unit tests (28 files)
+├── unit_tests/               # Node.js unit tests (36 files)
 ├── integration_tests/        # Integration tests (7 files)
 ├── e2e_tests/                # Playwright browser tests (8 specs)
 ├── docker-compose.yml        # Web server + test runners
