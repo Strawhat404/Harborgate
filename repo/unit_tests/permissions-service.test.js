@@ -28,7 +28,8 @@ const {
   consumeEntry,
   getPermissionsForReservation,
   expirePermissions,
-  calculatePermissionWindow
+  calculatePermissionWindow,
+  invalidatePermissionsForReservation
 } = await import('../frontend/js/services/permissions.js');
 
 async function seedReservation(reservation) {
@@ -219,5 +220,70 @@ describe('permissions service — expirePermissions (production)', () => {
     await expirePermissions();
     const stored = await DB.get('entry_permissions', perm.id);
     assert.equal(stored.status, 'active');
+  });
+});
+
+describe('permissions service — invalidatePermissionsForReservation (cancellation)', () => {
+  it('sets all linked permissions to cancelled immediately', async () => {
+    const { date, time } = futureLocalDateTime(5);
+    const resId = await seedReservation({ userId: 100, zone: 'A', date, time, status: 'approved' });
+    const reservation = await DB.get('reservations', resId);
+    const p1 = await createEntryPermission(reservation, 'single-use');
+    const p2 = await createEntryPermission(reservation, 'multi-use');
+
+    const count = await invalidatePermissionsForReservation(resId, { id: 100, username: 'owner', role: 'visitor' });
+    assert.equal(count, 2);
+
+    const stored1 = await DB.get('entry_permissions', p1.id);
+    const stored2 = await DB.get('entry_permissions', p2.id);
+    assert.equal(stored1.status, 'cancelled');
+    assert.equal(stored2.status, 'cancelled');
+  });
+
+  it('cancelled permissions cannot be consumed', async () => {
+    const { date, time } = futureLocalDateTime(5);
+    const resId = await seedReservation({ userId: 100, zone: 'A', date, time, status: 'approved' });
+    const reservation = await DB.get('reservations', resId);
+    const perm = await createEntryPermission(reservation, 'single-use');
+
+    await invalidatePermissionsForReservation(resId, { id: 100, username: 'owner', role: 'visitor' });
+
+    // consumeEntry relies on permissions-logic.js which checks status !== 'active'
+    const result = await consumeEntry(perm.id, { id: 100, username: 'owner', role: 'visitor' });
+    assert.equal(result.success, false);
+  });
+
+  it('is idempotent — double-invalidation does not error and count reflects only newly cancelled', async () => {
+    const { date, time } = futureLocalDateTime(5);
+    const resId = await seedReservation({ userId: 100, zone: 'A', date, time, status: 'approved' });
+    const reservation = await DB.get('reservations', resId);
+    await createEntryPermission(reservation, 'single-use');
+
+    const first = await invalidatePermissionsForReservation(resId, { id: 100, username: 'owner', role: 'visitor' });
+    assert.equal(first, 1);
+
+    const second = await invalidatePermissionsForReservation(resId, { id: 100, username: 'owner', role: 'visitor' });
+    assert.equal(second, 0, 'already-cancelled permissions must not be re-processed');
+  });
+
+  it('returns 0 when reservation has no linked permissions', async () => {
+    const { date, time } = futureLocalDateTime(5);
+    const resId = await seedReservation({ userId: 100, zone: 'A', date, time, status: 'pending' });
+
+    const count = await invalidatePermissionsForReservation(resId, { id: 100, username: 'owner', role: 'visitor' });
+    assert.equal(count, 0);
+  });
+
+  it('getPermissionsForReservation returns [] after reservation is deleted (orphan guard)', async () => {
+    const { date, time } = futureLocalDateTime(5);
+    const resId = await seedReservation({ userId: 100, zone: 'A', date, time, status: 'approved' });
+    const reservation = await DB.get('reservations', resId);
+    await createEntryPermission(reservation, 'single-use');
+
+    // Simulate reservation deletion
+    await DB.remove('reservations', resId);
+
+    const list = await getPermissionsForReservation(resId, { id: 100, username: 'owner', role: 'visitor' });
+    assert.deepEqual(list, [], 'must return empty when parent reservation is gone');
   });
 });

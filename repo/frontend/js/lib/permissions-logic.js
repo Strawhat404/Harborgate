@@ -32,6 +32,7 @@ export function createPermissionObject(startTime, policy = 'single-use') {
 export function consumeEntry(perm, now = Date.now()) {
   if (perm.status === 'consumed') return { success: false, error: 'Permission already fully consumed' };
   if (perm.status === 'expired') return { success: false, error: 'Permission has expired' };
+  if (perm.status === 'cancelled') return { success: false, error: 'Permission has been cancelled' };
   if (!isWithinPermissionWindow(perm, now)) return { success: false, error: 'Outside permission time window' };
 
   perm.usedEntries += 1;

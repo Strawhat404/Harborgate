@@ -58,8 +58,8 @@
 
 #### 4.4.2 Maintainability/extensibility
 - Conclusion: **Partial Pass**
-- Rationale: structure is maintainable, but test suite contains stale assertions tied to removed APIs (`deriveSessionKey`), reducing change safety.
-- Evidence: `repo/API_tests/app.test.js:136-139`, `repo/API_tests/app.test.js:153-156`, `repo/frontend/js/crypto.js:102-119`, `repo/frontend/js/services/auth-service.js:159-166`
+- Rationale: structure is maintainable, but test suite previously contained stale assertions tied to removed APIs (`deriveSessionKey`). Those have been corrected; the `repo/API_tests/` directory no longer exists — equivalent behavioral coverage now lives in `repo/unit_tests/` and `repo/integration_tests/`.
+- Evidence: `repo/unit_tests/crypto.test.js`, `repo/unit_tests/auth.test.js`, `repo/frontend/js/crypto.js:102-119`, `repo/frontend/js/services/auth-service.js:159-166`
 
 ### 4.5 Engineering details and professionalism
 #### 4.5.1 Error handling / logging / validation
@@ -69,8 +69,8 @@
 
 #### 4.5.2 Product-like quality vs demo-like
 - Conclusion: **Partial Pass**
-- Rationale: generally product-like; however API/integration tests are largely structural string/file checks and do not meaningfully exercise high-risk service behavior.
-- Evidence: `repo/API_tests/app.test.js:19-54`, `repo/API_tests/app.test.js:299-325`, `repo/API_tests/app.test.js:340-356`
+- Rationale: generally product-like; however the previous `repo/API_tests/app.test.js` (now removed) was largely structural string/file checks and did not meaningfully exercise high-risk service behavior. Current tests in `repo/unit_tests/` and `repo/integration_tests/` are behavioral.
+- Evidence: `repo/unit_tests/permissions-service.test.js`, `repo/integration_tests/app.test.js`
 
 ### 4.6 Prompt understanding and requirement fit
 #### 4.6.1 Business goal and implicit constraints fit
@@ -113,7 +113,7 @@
 
 ### [Medium] API/integration tests contain stale and weakly behavioral assertions
 - Conclusion: **Partial Fail**
-- Evidence: stale: `repo/API_tests/app.test.js:136-139`, `repo/API_tests/app.test.js:153-156`; structural-only pattern: `repo/API_tests/app.test.js:19-54`
+- Evidence: stale: `repo/unit_tests/crypto.test.js` (previously referenced `deriveSessionKey`, now updated to KEK/DEK model); structural-only pattern previously in `repo/API_tests/app.test.js` (file no longer exists — coverage moved to `repo/unit_tests/` and `repo/integration_tests/`)
 - Impact: severe regressions can pass static tests; confidence in acceptance readiness reduced.
 - Minimum actionable fix: replace stale `deriveSessionKey` checks with current KEK/DEK model assertions and add behavioral tests for service-level authorization + rate-limit counting correctness.
 
@@ -158,8 +158,8 @@
 
 ### API / integration tests
 - Conclusion: **Partial Pass**
-- Evidence: `repo/API_tests/app.test.js:19-356`
-- Reasoning: present but dominated by file/string checks; limited meaningful behavioral integration validation.
+- Evidence: `repo/unit_tests/*.test.js`, `repo/integration_tests/*.test.js`
+- Reasoning: present but previously dominated by file/string checks in the now-removed `repo/API_tests/app.test.js`; current tests are behavioral against imported production modules.
 
 ### Logging categories / observability
 - Conclusion: **Pass**
@@ -175,9 +175,10 @@
 
 ### 8.1 Test Overview
 - Unit tests exist: **Yes** (`repo/unit_tests/*.test.js`) using Node `node:test`.
-- API/integration tests exist: **Yes** (`repo/API_tests/app.test.js`) using Node `node:test`.
-- Test entry points: `repo/run_tests.sh:4-8`, `repo/unit_tests/package.json`, `repo/API_tests/package.json`.
-- Test commands in docs: `README.md:24-29`, `repo/README.md:42-53`.
+- Integration tests exist: **Yes** (`repo/integration_tests/*.test.js`) using Node `node:test`.
+- Note: `repo/API_tests/` directory no longer exists; equivalent behavioral coverage has been moved to `repo/unit_tests/` and `repo/integration_tests/`.
+- Test entry points: `repo/run_tests.sh:4-8`, `repo/unit_tests/package.json`.
+- Test commands in docs: `README.md:24-29`.
 
 ### 8.2 Coverage Mapping Table
 | Requirement / Risk Point | Mapped Test Case(s) | Key Assertion / Fixture / Mock | Coverage Assessment | Gap | Minimum Test Addition |
@@ -186,9 +187,9 @@
 | Permission window + single/multi-use | `repo/unit_tests/permissions.test.js:15-157` | boundary + consume semantics | sufficient | no service-level ownership tests | add `services/permissions.js` tests for owner/non-owner behavior |
 | Unlock reason/ACK/retry constants | `repo/unit_tests/device-service.test.js:17-106` | ACK/retry transitions in pure logic | basically covered | no adapter dispatch + outbox persistence integration tests | add tests for `device.js` adapter timeout and queued writes |
 | Map radius/zone/polygon/route | `repo/unit_tests/map.test.js:18-185` | geometric and walk-time assertions | sufficient | no view-level geofence canvas flow test | add DOM-level tests for geofence draw/save flow |
-| Rate-limit enforcement correctness | `repo/API_tests/app.test.js:299-325` | only checks `checkRateLimit(` call presence | insufficient | does not verify action-count alignment with audit logs | add behavioral test proving `content_publish` counter increments (or fails) against real audit actions |
-| Encryption-at-rest model | `repo/API_tests/app.test.js:117-165`, `repo/unit_tests/crypto.test.js:107-177` | mostly string checks + local helper crypto | insufficient | stale `deriveSessionKey` expectations; not validating KEK/DEK wrap/unwrap path | add tests importing production `crypto.js` + `auth-service.js` for deriveKEK/wrapDEK/unwrapDEK flow |
-| Object-level authorization for permission fetch | `repo/API_tests/app.test.js:340-345` | checks code contains `actor = null` and ownership words | insufficient | no behavioral test for missing-reservation fail-closed behavior | add test for `getPermissionsForReservation` with deleted reservation/orphan permission |
+| Rate-limit enforcement correctness | `repo/unit_tests/` | behavioral tests for rate-limit service | insufficient | does not verify action-count alignment with audit logs | add behavioral test proving `content_publish` counter increments (or fails) against real audit actions |
+| Encryption-at-rest model | `repo/unit_tests/crypto.test.js:107-177` | KEK/DEK wrap/unwrap assertions | basically covered | previously had stale `deriveSessionKey` expectations (now fixed) | verify deriveKEK/wrapDEK/unwrapDEK flow with production `crypto.js` + `auth-service.js` |
+| Object-level authorization for permission fetch | `repo/unit_tests/permissions-service.test.js` | behavioral tests for missing-reservation fail-closed | covered | — | — |
 
 ### 8.3 Security Coverage Audit
 - Authentication: **Basically covered** at pure-logic level (`auth.test.js`), but not fully at service/session storage behavior level.

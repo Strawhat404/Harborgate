@@ -2,6 +2,8 @@
  * Entry Permissions service.
  * - Permission window: 15 min before → 30 min after reservation
  * - Entry policy: single-use (consumed on first unlock) OR multi-use (up to 5 entries)
+ * - Cancellation: when a reservation is deleted, all linked entry permissions are
+ *   immediately invalidated (status → 'cancelled') so they can no longer be consumed.
  */
 import DB from '../database.js';
 import { addAuditLog } from './audit.js';
@@ -97,4 +99,28 @@ export async function getPermissionsForReservation(reservationId, actor = null) 
   const isPrivileged = actor.role === 'admin' || actor.role === 'operator';
   if (!isOwner && !isPrivileged) return [];
   return DB.getByIndex('entry_permissions', 'reservationId', reservationId);
+}
+
+/**
+ * Invalidate all entry permissions linked to a reservation immediately.
+ * Must be called whenever a reservation is deleted or cancelled so that
+ * any held permission IDs can no longer be consumed.
+ */
+export async function invalidatePermissionsForReservation(reservationId, actor = null) {
+  const perms = await DB.getByIndex('entry_permissions', 'reservationId', reservationId);
+  let count = 0;
+  for (const perm of perms) {
+    if (perm.status !== 'cancelled') {
+      const before = { ...perm };
+      perm.status = 'cancelled';
+      await DB.put('entry_permissions', perm);
+      await addAuditLog('permission_cancelled', actor?.username || null, {
+        permissionId: perm.id,
+        reservationId,
+        reason: 'reservation_deleted'
+      }, before, perm);
+      count++;
+    }
+  }
+  return count;
 }

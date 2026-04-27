@@ -167,15 +167,14 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/js/router.js
 
 ## Environment Rules
 
-Everything runs inside Docker. **No host-level installs required.**
+Everything runs inside Docker. No host-level installs required.
 
 - **No** `npm install` on the host
 - **No** `pip install` on the host
 - **No** `apt-get` on the host
-- **No** runtime installs
 - **No** manual database setup
 
-All dependencies are resolved inside Docker containers.
+All dependencies are resolved inside Docker containers. The coverage runner installs `c8` inside its container at runtime (`npm install --no-save c8`) — this is a container-internal install only and requires nothing on the host.
 
 ---
 

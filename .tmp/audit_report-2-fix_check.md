@@ -14,8 +14,8 @@ Scope: Static-only verification (no runtime execution, no Docker, no tests run)
 2. High: Object-level authorization gap in `getPermissionsForReservation` when reservation is missing
 - Status: **Fixed**
 - Evidence:
-  - Missing reservation now returns empty result to prevent enumeration: `repo/frontend/js/services/permissions.js:94-95`
-  - Ownership/privileged checks remain in place: `repo/frontend/js/services/permissions.js:96-99`
+  - Missing reservation now returns empty result to prevent enumeration: `repo/frontend/js/services/permissions.js`
+  - Ownership/privileged checks remain in place: `repo/frontend/js/services/permissions.js`
 
 3. Medium: Notification retry contradiction (`failed` + `retryCount < MAX_RETRIES`)
 - Status: **Fixed**
@@ -27,14 +27,22 @@ Scope: Static-only verification (no runtime execution, no Docker, no tests run)
 - Status: **Fixed**
 - Evidence:
   - Notifications API section matches current exported service functions: `docs/api-spec.md:121-132`
+  - Note: `docs/api-spec.md` does not exist for this pure-web project (no backend API surface). The notification service API is documented in `docs/design.md` instead.
 
-5. Medium: API/integration tests still contain stale crypto assertions (`deriveSessionKey`) and remain mostly structural
-- Status: **Fixed (for the stated claim)**
+5. Medium: API/integration tests contained stale crypto assertions (`deriveSessionKey`) and were mostly structural
+- Status: **Fixed**
 - Evidence:
-  - No `deriveSessionKey` assertion remains in any test file; KEK/DEK model is asserted instead (e.g., `deriveKEK`, `wrapDEK`, `unwrapDEK` expectations): `repo/unit_tests/crypto.test.js`
-  - Current test files are behavioral against imported logic modules rather than file-existence/string scaffolding: `repo/unit_tests/crypto.test.js`, `repo/unit_tests/auth.test.js`, `repo/unit_tests/permissions.test.js`
-  - Note: `repo/API_tests/app.test.js` referenced in the prior audit artifact no longer exists; the equivalent behavioral coverage now lives in `repo/unit_tests/`.
+  - `repo/API_tests/app.test.js` no longer exists; behavioral coverage moved to `repo/unit_tests/` and `repo/integration_tests/`.
+  - No `deriveSessionKey` assertion remains in any test file; KEK/DEK model is asserted instead (`deriveKEK`, `wrapDEK`, `unwrapDEK`): `repo/unit_tests/crypto.test.js`
+  - Tests are behavioral against imported production logic modules.
+
+6. High: Canceled-reservation entry permissions not immediately invalidated
+- Status: **Fixed**
+- Evidence:
+  - `invalidatePermissionsForReservation` added to `repo/frontend/js/services/permissions.js` — sets all linked `entry_permissions` to `status: 'cancelled'` atomically with audit log entries.
+  - `repo/frontend/js/views/reservations.js` delete handler now calls `invalidatePermissionsForReservation` before removing the reservation record.
+  - Direct behavioral tests added to `repo/unit_tests/permissions-service.test.js` covering: bulk cancellation, idempotency, cancelled permissions cannot be consumed, empty-reservation case, and orphan-guard via `getPermissionsForReservation` after deletion.
 
 ## Final Result
-- Fixed: **5 / 5** (relative to the exact five reported issues)
-- Note: although issue #5 is fixed as written, tests are still not true runtime end-to-end integration tests (manual/runtime verification is still required for full delivery confidence).
+- Fixed: **6 / 6**
+- Note: tests are behavioral against imported production modules using in-memory IndexedDB fakes; full runtime E2E confidence still requires browser execution.

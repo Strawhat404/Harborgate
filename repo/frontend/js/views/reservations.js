@@ -1,7 +1,7 @@
 import DB from '../database.js';
 import Store from '../store.js';
 import { requireRole, getCurrentUser, hasRole } from '../services/auth-service.js';
-import { createEntryPermission, getPermissionsForReservation, getPermissionStatusLabel } from '../services/permissions.js';
+import { createEntryPermission, getPermissionsForReservation, getPermissionStatusLabel, invalidatePermissionsForReservation } from '../services/permissions.js';
 import { scheduleReservationReminders, createNotification } from '../services/notifications.js';
 import { addAuditLog } from '../services/audit.js';
 import { checkRateLimit } from '../services/rate-limits.js';
@@ -152,6 +152,7 @@ export async function renderReservations(container) {
         }
 
         await DB.remove('reservations', reservation.id);
+        await invalidatePermissionsForReservation(reservation.id, user);
         await addAuditLog('reservation_deleted', user.username, { reservationId: reservation.id });
         showNotification('Reservation deleted', 'success');
         renderReservations(container);
